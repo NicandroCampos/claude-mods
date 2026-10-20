@@ -1,0 +1,6 @@
+{
+  "name": "claude-mods",
+  "description": "Mods do Claude Code de Nicandro Campos.",
+  "owner": { "name": "Nicandro Campos" },
+  "plugins": [{ "name": "status-sessao", "source": "./" }]
+}
