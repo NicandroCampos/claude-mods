@@ -1,6 +1,6 @@
 export type Etapa = { id: string; titulo: string; status: 'pendente' | 'andamento' | 'feita' }
 
-export type Atividade = { id: string; rotulo: string; isSubagente: boolean }
+export type Atividade = { id: string; rotulo: string; icone: string; isSubagente: boolean }
 
 export type Ao = {
   fase: 'parado' | 'trabalhando' | 'aguardando'

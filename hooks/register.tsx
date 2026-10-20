@@ -21,7 +21,33 @@ const pulso = atom({ plugin: 'status-sessao', key: 'pulso' } as const, 0)
 const FERRAMENTA = 'progresso'
 const FERRAMENTA_COMPLETA = `mcp__status-sessao__${FERRAMENTA}`
 
-const GIRO = ['◐', '◓', '◑', '◒']
+const GIRO = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+function iconeDe(tool: string): string {
+  switch (tool) {
+    case 'Bash':
+    case 'PowerShell':
+      return '❯'
+    case 'Read':
+    case 'WebFetch':
+      return '≡'
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit':
+      return '✎'
+    case 'Grep':
+    case 'Glob':
+    case 'WebSearch':
+    case 'ToolSearch':
+      return '⌕'
+    case 'Agent':
+    case 'Task':
+      return '⇢'
+    case 'AskUserQuestion':
+      return '?'
+  }
+  return '•'
+}
 
 const SECAO = [
   'Barra de status (mod status-sessao): a pessoa vê, acima do campo de mensagem, uma barra com o progresso do seu trabalho.',
@@ -105,7 +131,7 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     estaTrabalhando = (await read($, ao)).fase !== 'parado'
-    $.clock.every(1000, () => {
+    $.clock.every(400, () => {
       if (estaTrabalhando) void update($, pulso, n => n + 1)
     })
     await $.tool.register({
@@ -225,7 +251,7 @@ export const register: Register = on => {
     await update($, ao, s => ({
       ...s,
       acoes: s.acoes + 1,
-      rodando: [...s.rodando, { id: e.tool_use_id, rotulo, isSubagente }].slice(-20),
+      rodando: [...s.rodando, { id: e.tool_use_id, rotulo, icone: iconeDe(e.tool), isSubagente }].slice(-20),
       ultimaAtividade: rotulo,
       ...(espera !== null && !isSubagente ? { fase: 'aguardando' as const, aguardandoMotivo: espera } : {}),
     }))
@@ -281,23 +307,26 @@ export const register: Register = on => {
     const total = s.etapas.length
     const feitas = s.etapas.filter(x => x.status === 'feita').length
     const atual = s.etapas.find(x => x.status === 'andamento')
-    const proxima = s.etapas.find(x => x.status === 'pendente')
 
     if (!e.props.isWorking) {
       if (s.ultimoTurno === null) return next(e)
       const t = s.ultimoTurno
-      const como =
-        t.motivo === 'aborted' ? 'interrompido' : t.motivo === 'error' ? 'parou com erro' : 'concluído'
-      const plano = total > 0 && feitas < total ? ` · plano em ${feitas}/${total}` : ''
+      const [icone, cor, titulo] =
+        t.motivo === 'aborted'
+          ? ['■', 'warning', 'Interrompido']
+          : t.motivo === 'error'
+            ? ['✕', 'error', 'Parou com erro']
+            : ['✓', 'success', 'Pronto, sua vez']
+      const plano = total > 0 && feitas < total ? ` · plano em ${feitas} de ${total}` : ''
 
       return (
-        <Box>
-          <Text>
-            <Text color="success">○ Parado, sua vez</Text>
+        <Box paddingX={1}>
+          <Text wrap="truncate-end">
+            <Text color={cor} weight="bold">
+              {icone} {titulo}
+            </Text>
             <Text dimColor>
-              {' '}
-              · último trabalho {como} em {duracao(t.segundos * 1000)}, {t.acoes}{' '}
-              {t.acoes === 1 ? 'ação' : 'ações'}
+              {'  '}último trabalho: {duracao(t.segundos * 1000)} · {t.acoes} {t.acoes === 1 ? 'ação' : 'ações'}
               {plano}
             </Text>
           </Text>
@@ -305,72 +334,81 @@ export const register: Register = on => {
       )
     }
 
-    const decorrido = s.inicio === null ? null : agora - s.inicio
     const isAguardando = s.fase === 'aguardando'
-    const ativos = s.rodando
-    const ultimo = ativos[ativos.length - 1]
-    const fazendo = isAguardando
-      ? `Esperando ${s.aguardandoMotivo ?? 'você'}`
+    const cor = isAguardando ? 'warning' : 'claude'
+    const decorrido = s.inicio === null ? null : agora - s.inicio
+    const ultimo = s.rodando[s.rodando.length - 1]
+    const [icone, fazendo] = isAguardando
+      ? ['?', `Esperando ${s.aguardandoMotivo ?? 'você'}`]
       : ultimo
-        ? `${ultimo.isSubagente ? '[subagente] ' : ''}${ultimo.rotulo}`
-        : 'Pensando / escrevendo a resposta'
-    const paralelo = !isAguardando && ativos.length > 1 ? ` (+${ativos.length - 1} em paralelo)` : ''
+        ? [ultimo.icone, `${ultimo.isSubagente ? 'subagente · ' : ''}${ultimo.rotulo}`]
+        : ['…', 'Pensando e escrevendo a resposta']
+    const paralelo = !isAguardando && s.rodando.length > 1 ? `+${s.rodando.length - 1} em paralelo` : ''
 
-    const largura = Math.max(10, Math.min(30, e.props.bodyColumns - 44))
-    const fracao = total === 0 ? 0 : (feitas + (atual ? 0.5 : 0)) / total
-    const cheios = Math.round(fracao * largura)
-    const barra = '█'.repeat(cheios) + '░'.repeat(largura - cheios)
+    const largura = Math.max(12, Math.min(40, e.props.bodyColumns - 36))
+    const fracao = total === 0 ? 0 : Math.min(1, (feitas + (atual ? 0.5 : 0)) / total)
+    const exato = fracao * largura
+    const cheios = Math.floor(exato)
+    const meio = exato - cheios >= 0.5 && cheios < largura ? '╸' : ''
+    const trilho = '─'.repeat(Math.max(0, largura - cheios - meio.length))
 
     let restante = ''
     if (total > 0 && feitas > 0 && feitas < total && s.etapasInicio !== null) {
-      const porEtapa = (agora - s.etapasInicio) / feitas
-      restante = ` · ≈ ${duracao(porEtapa * (total - feitas))} restantes (estimativa)`
+      restante = ` · ~${duracao(((agora - s.etapasInicio) / feitas) * (total - feitas))} restantes`
     }
+    const etapaAtual = atual ? s.etapas.indexOf(atual) + 1 : Math.min(total, feitas + 1)
+    const corte = total > 4 ? 16 : 28
 
     return (
-      <Box flexDirection="column">
-        <Text wrap="truncate-end">
-          {isAguardando ? (
-            <Text color="warning" weight="bold">
-              ◆ Aguardando você
+      <Box flexDirection="column" borderStyle="round" borderColor={cor} paddingX={1}>
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text>
+            <Text color={cor}>{isAguardando ? '◆' : GIRO[giro % GIRO.length]} </Text>
+            <Text backgroundColor={cor} color="inverseText" weight="bold">
+              {isAguardando ? ' AGUARDANDO VOCÊ ' : ' TRABALHANDO '}
             </Text>
-          ) : (
-            <Text color="claude" weight="bold">
-              {GIRO[giro % GIRO.length]} Trabalhando
-            </Text>
-          )}
-          <Text dimColor>
-            {decorrido === null ? '' : ` · ${duracao(decorrido)}`} · {s.acoes} {s.acoes === 1 ? 'ação' : 'ações'}
           </Text>
-        </Text>
-        <Text wrap="truncate-end">
-          <Text dimColor>↳ </Text>
-          <Text color={isAguardando ? 'warning' : undefined}>{fazendo}</Text>
-          <Text dimColor>{paralelo}</Text>
-        </Text>
+          <Text dimColor tabular>
+            {decorrido === null ? '' : `${duracao(decorrido)} · `}
+            {s.acoes} {s.acoes === 1 ? 'ação' : 'ações'}
+          </Text>
+        </Box>
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text wrap="truncate-end">
+            <Text color={cor}>{icone} </Text>
+            <Text weight={isAguardando ? 'bold' : undefined}>{fazendo}</Text>
+          </Text>
+          {paralelo ? <Text dimColor>{` ${paralelo}`}</Text> : null}
+        </Box>
         {total > 0 ? (
           <Text wrap="truncate-end">
-            <Text color="claude">{barra}</Text>
-            <Text tabular>
-              {' '}
-              {Math.round(fracao * 100)}%
+            <Text color={cor}>{'━'.repeat(cheios)}{meio}</Text>
+            <Text dimColor>{trilho}</Text>
+            <Text weight="bold" tabular>
+              {` ${String(Math.round(fracao * 100)).padStart(3)}%`}
             </Text>
             <Text dimColor>
-              {' '}
-              · {feitas}/{total} etapas
+              {'  '}etapa {etapaAtual} de {total}
               {restante}
             </Text>
           </Text>
         ) : (
           <Text dimColor wrap="truncate-end">
-            sem plano de etapas ainda: progresso indisponível
+            {'─'.repeat(largura)}  sem plano de etapas: progresso indisponível
           </Text>
         )}
-        {total > 0 && (atual || proxima) ? (
-          <Text dimColor wrap="truncate-end">
-            {atual ? `agora: ${atual.titulo}` : ''}
-            {atual && proxima ? ' · ' : ''}
-            {proxima ? `a seguir: ${proxima.titulo}` : ''}
+        {total > 0 ? (
+          <Text wrap="truncate-end">
+            {s.etapas.map((x, i) => (
+              <Text
+                color={x.status === 'feita' ? 'success' : x.status === 'andamento' ? cor : undefined}
+                dimColor={x.status === 'pendente'}
+                weight={x.status === 'andamento' ? 'bold' : undefined}
+              >
+                {i > 0 ? '   ' : ''}
+                {x.status === 'feita' ? '●' : x.status === 'andamento' ? '◉' : '○'} {encurtar(x.titulo, corte)}
+              </Text>
+            ))}
           </Text>
         ) : null}
       </Box>

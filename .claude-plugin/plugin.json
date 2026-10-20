@@ -1,6 +1,6 @@
 {
   "name": "status-sessao",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Barra acima do campo de mensagem: se o Claude está trabalhando ou parado, o que está fazendo agora e o progresso estimado da tarefa.",
   "author": { "name": "Nicandro Campos" },
   "types": "./types/index.d.ts"

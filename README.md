@@ -8,11 +8,15 @@ Mod para o Claude Code que mostra, acima do campo de mensagem, uma barra com o e
 - o progresso do plano de etapas, com porcentagem, etapa atual, próxima etapa e tempo restante estimado.
 
 ```
-◐ Trabalhando · 2m 14s · 12 ações
-↳ Editando register.tsx
-███████████░░░░░░░░░░  55% · 3/5 etapas · ≈ 1m 40s restantes (estimativa)
-agora: Escrever testes · a seguir: Revisar
+╭──────────────────────────────────────────────────────────────────╮
+│ ⠹  TRABALHANDO                                   2m 14s · 12 ações │
+│ ✎ Editando register.tsx                            +1 em paralelo │
+│ ━━━━━━━━━━━━━━━━━━━━╸───────────────   58%  etapa 3 de 5 · ~1m 40s │
+│ ● Ler código   ● Escrever mod   ◉ Testes   ○ Revisar   ○ Publicar  │
+╰──────────────────────────────────────────────────────────────────╯
 ```
+
+A moldura muda de cor com a fase: laranja trabalhando, amarela aguardando você. Parado, a barra encolhe para uma linha: `✓ Pronto, sua vez  último trabalho: 3m 02s · 18 ações`.
 
 O progresso vem de uma ferramenta que o mod registra (`progresso`): em pedidos de 3 ou mais etapas, o Claude declara o plano e atualiza a cada etapa. Também lê as listas de tarefas nativas (TodoWrite, TaskCreate/TaskUpdate). Sem plano, a barra diz que o progresso está indisponível em vez de inventar um número.
 

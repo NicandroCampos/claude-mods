@@ -20,7 +20,7 @@ function motor(on: On) {
   on('turn.complete', () => ({ text: '' }))
   on('ui.render', ($, e) => {
     const { Box } = $.ui.resolve(e)
-    return h(Box, {})
+    return h(Box, {}) as never
   })
 }
 
@@ -28,7 +28,7 @@ test('sem nenhum turno ainda, a barra não aparece', async ($, on) => {
   motor(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...banda(false), surface })
-    expect(await ui.find({ type: 'Text', text: /Parado|Trabalhando/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Pronto|TRABALHANDO/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -36,7 +36,8 @@ test('sem nenhum turno ainda, a barra não aparece', async ($, on) => {
 test('trabalhando mostra a fase, o plano e o progresso', async ($, on) => {
   motor(on)
   await $.turn.start({ text: 'faz tudo', turnId: 't1' })
-  await $.tool.call({
+  const chamar = $.tool.call as unknown as (input: unknown) => Promise<unknown>
+  await chamar({
     tool: 'mcp__status-sessao__progresso',
     tool_use_id: 'u1',
     etapas: [
@@ -44,13 +45,13 @@ test('trabalhando mostra a fase, o plano e o progresso', async ($, on) => {
       { titulo: 'Escrever o mod', status: 'andamento' },
       { titulo: 'Testar', status: 'pendente' },
     ],
-  } as never)
+  })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...banda(true), surface })
-    expect(await ui.find({ type: 'Text', text: /Trabalhando/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /1\/3 etapas/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /agora: Escrever o mod · a seguir: Testar/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /TRABALHANDO/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /etapa 2 de 3/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /◉ Escrever o mod/ })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -62,7 +63,7 @@ test('depois do turno, mostra que está parado', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...banda(false), surface })
-    expect(await ui.find({ type: 'Text', text: /Parado, sua vez/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Pronto, sua vez/ })).toBeDefined()
     await ui.unmount()
   }
 })
