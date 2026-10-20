@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Ao, Etapa } from '../types'
+import type { Ao, Etapa, Fundo } from '../types'
 
 const INICIAL: Ao = {
   fase: 'parado',
@@ -13,15 +13,24 @@ const INICIAL: Ao = {
   etapas: [],
   etapasInicio: null,
   ultimoTurno: null,
+  fundo: [],
+  turnoDeAviso: false,
 }
 
 const ao = atom({ plugin: 'status-sessao', key: 'ao' } as const, INICIAL)
 const pulso = atom({ plugin: 'status-sessao', key: 'pulso' } as const, 0)
 
+type Motor = Parameters<typeof read>[0]
+
 const FERRAMENTA = 'progresso'
 const FERRAMENTA_COMPLETA = `mcp__status-sessao__${FERRAMENTA}`
 
 const GIRO = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+const ICONE_FUNDO: Record<Fundo['tipo'], string> = { agente: '⇢', comando: '❯', monitor: '◎', outro: '•' }
+const NOME_FUNDO: Record<Fundo['tipo'], string> = { agente: 'agente', comando: 'comando', monitor: 'monitor', outro: 'tarefa' }
+const MAX_FUNDO = 4
+const ENCERRADO = new Set(['completed', 'failed', 'killed'])
 
 function iconeDe(tool: string): string {
   switch (tool) {
@@ -126,13 +135,102 @@ function idDoResultado(ran: unknown): string | null {
   return typeof id === 'string' ? id : null
 }
 
+function tipoDe(tipo: unknown): Fundo['tipo'] {
+  const t = String(tipo)
+  if (/agent/.test(t)) return 'agente'
+  if (t === 'shell' || /bash/.test(t)) return 'comando'
+  if (t === 'monitor') return 'monitor'
+  return 'outro'
+}
+
+function fundoDe(s: Ao): Fundo[] {
+  return s.fundo ?? []
+}
+
+// O que uma chamada deixou rodando em segundo plano, lido do resultado da ferramenta.
+function lancadoPor(tool: string, args: Record<string, unknown>, result: unknown, agora: number): Fundo | null {
+  if (result === null || typeof result !== 'object') return null
+  const r = result as Record<string, unknown>
+  if ((tool === 'Agent' || tool === 'Task') && (r.status === 'async_launched' || r.status === 'remote_launched')) {
+    if (typeof r.agentId !== 'string') return null
+    return { id: r.agentId, tipo: 'agente', rotulo: encurtar(args.description || r.description, 50) || 'subagente', desde: agora }
+  }
+  if ((tool === 'Bash' || tool === 'PowerShell') && typeof r.backgroundTaskId === 'string') {
+    return { id: r.backgroundTaskId, tipo: 'comando', rotulo: encurtar(args.description || args.command, 50), desde: agora }
+  }
+  if (tool === 'Monitor' && typeof r.taskId === 'string') {
+    return { id: r.taskId, tipo: 'monitor', rotulo: encurtar(args.description || args.command, 50) || 'monitor', desde: agora }
+  }
+  if (tool === 'Workflow' && typeof r.taskId === 'string') {
+    return { id: r.taskId, tipo: 'outro', rotulo: encurtar(r.workflowName, 50) || 'workflow', desde: agora }
+  }
+  return null
+}
+
+// Ids das tarefas que um aviso dá por encerradas. O aviso de um monitor que só
+// relata um evento não traz status de fim e não tira nada da lista.
+function encerradosNoAviso(texto: string): string[] {
+  const ids: string[] = []
+  for (const bloco of texto.split('<task-notification>').slice(1)) {
+    const id = /<task-id>\s*([^<]+?)\s*<\/task-id>/.exec(bloco)?.[1]
+    const status = /<status>\s*([^<]+?)\s*<\/status>/.exec(bloco)?.[1]
+    const segueEsperando = /waiting on its own background work|background work of its own still running/i.test(bloco)
+    if (id && status && !segueEsperando && /^(completed|failed|killed|stopped|cancell?ed|error)$/i.test(status)) ids.push(id)
+  }
+  return ids
+}
+
+// Espelho de "há algo em segundo plano?", para os relógios não lerem o estado a cada tique.
+let temFundo = false
+
+function mudar($: Motor, fn: (s: Ao) => Ao) {
+  return update($, ao, (s): Ao => {
+    const novo = fn(s)
+    temFundo = fundoDe(novo).length > 0
+    return novo
+  })
+}
+
+// Um subagente pode encerrar o turno e seguir esperando trabalho próprio em
+// segundo plano: o aviso e o fim do turno dele dizem "completed" cedo demais.
+// Só sai da lista o subagente que o motor dá por encerrado (ou já não lista).
+async function confirmarFim($: Motor, ids: string[]) {
+  if (ids.length === 0) return
+  const agentes = await $.agent.list()
+  const vivos = new Set(agentes.filter(a => !ENCERRADO.has(a.status)).map(a => a.id))
+  await tirarDoFundo($, ids.filter(id => !vivos.has(id)))
+}
+
+function tirarDoFundo($: Motor, ids: string[]) {
+  return mudar($, s => {
+    const fundo = fundoDe(s)
+    const resto = fundo.filter(x => !ids.includes(x.id))
+    return resto.length === fundo.length ? s : { ...s, fundo: resto }
+  })
+}
+
 export const register: Register = on => {
   let estaTrabalhando = false
+  let proximoEhAviso = false
 
   on('session.start', async ($, e, next) => {
-    estaTrabalhando = (await read($, ao)).fase !== 'parado'
+    const s = await read($, ao)
+    estaTrabalhando = s.fase !== 'parado'
+    temFundo = fundoDe(s).length > 0
     $.clock.every(400, () => {
       if (estaTrabalhando) void update($, pulso, n => n + 1)
+    })
+    // Parado com tarefas em segundo plano: o relógio de cada uma segue andando.
+    $.clock.every(1000, () => {
+      if (!estaTrabalhando && temFundo) void update($, pulso, n => n + 1)
+    })
+    // Rede de segurança: subagente que já terminou sai da lista mesmo que o aviso demore.
+    $.clock.every(5000, () => {
+      if (!temFundo) return
+      void $.agent.list().then(agentes => {
+        const fim = agentes.filter(a => ENCERRADO.has(a.status)).map(a => a.id)
+        if (fim.length > 0) return tirarDoFundo($, fim)
+      })
     })
     await $.tool.register({
       name: FERRAMENTA,
@@ -170,11 +268,25 @@ export const register: Register = on => {
     }
   })
 
+  // Aviso de tarefa em segundo plano: tira da lista o que terminou e marca o
+  // turno que ele abrir, para a barra não trocar de cara a cada aviso.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'task-notification') {
+      const fim = encerradosNoAviso(e.text)
+      await confirmarFim($, fim)
+      if (e.turnId === undefined) proximoEhAviso = true
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       const agora = await $.clock.now()
+      const isAviso = proximoEhAviso
+      proximoEhAviso = false
       estaTrabalhando = true
-      await update($, ao, (s): Ao => {
+      await mudar($, (s): Ao => {
         const tudoFeito = s.etapas.length > 0 && s.etapas.every(x => x.status === 'feita')
         return {
           ...s,
@@ -186,6 +298,7 @@ export const register: Register = on => {
           ultimaAtividade: null,
           etapas: tudoFeito ? [] : s.etapas,
           etapasInicio: tudoFeito ? null : s.etapasInicio,
+          turnoDeAviso: isAviso,
         }
       })
     }
@@ -197,21 +310,54 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       const agora = await $.clock.now()
       estaTrabalhando = false
-      await update($, ao, (s): Ao => ({
+      await mudar($, (s): Ao => ({
         ...s,
         fase: 'parado',
         aguardandoMotivo: null,
         rodando: [],
-        ultimoTurno: {
-          segundos: s.inicio === null ? 0 : Math.round((agora - s.inicio) / 1000),
-          acoes: s.acoes,
-          motivo: e.reason,
-        },
+        turnoDeAviso: false,
+        // Um turno que só leu um aviso, sem agir, não apaga o resumo do último trabalho.
+        ultimoTurno:
+          s.turnoDeAviso && s.acoes === 0 && s.ultimoTurno !== null && e.reason === 'answer'
+            ? s.ultimoTurno
+            : {
+                segundos: s.inicio === null ? 0 : Math.round((agora - s.inicio) / 1000),
+                acoes: s.acoes,
+                motivo: e.reason,
+              },
       }))
+    } else {
+      await confirmarFim($, [e.agentId])
     }
 
     return next(e)
   })
+
+  // A lista oficial do que segue rodando quando o turno principal termina.
+  on('classic.Stop', async ($, e, next) => {
+    const lista = e.background_tasks
+    if (Array.isArray(lista)) {
+      const agora = await $.clock.now()
+      await mudar($, (s): Ao => {
+        const antes = new Map(fundoDe(s).map(x => [x.id, x]))
+        return {
+          ...s,
+          fundo: lista.map(t => {
+            const ja = antes.get(t.id)
+            return {
+              id: t.id,
+              tipo: ja?.tipo ?? tipoDe(t.type),
+              rotulo: ja?.rotulo || encurtar(t.description || t.command || t.type, 50),
+              desde: ja?.desde ?? agora,
+              ...(ja?.agora ? { agora: ja.agora } : {}),
+            }
+          }),
+        }
+      })
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('classic.PermissionRequest', async ($, e, next) => {
     await update($, ao, (s): Ao => ({
@@ -239,20 +385,19 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     const args = e as unknown as Record<string, unknown>
-    const rotulo = rotuloDe(e.tool, args)
+    const nome = String(e.tool)
+    const rotulo = rotuloDe(nome, args)
     const isSubagente = e.agentId !== undefined
     const espera =
-      e.tool === 'AskUserQuestion'
-        ? 'sua resposta a uma pergunta'
-        : String(e.tool) === 'ExitPlanMode'
-          ? 'sua aprovação do plano'
-          : null
+      e.tool === 'AskUserQuestion' ? 'sua resposta a uma pergunta' : nome === 'ExitPlanMode' ? 'sua aprovação do plano' : null
 
     await update($, ao, s => ({
       ...s,
       acoes: s.acoes + 1,
-      rodando: [...s.rodando, { id: e.tool_use_id, rotulo, icone: iconeDe(e.tool), isSubagente }].slice(-20),
+      rodando: [...s.rodando, { id: e.tool_use_id, rotulo, icone: iconeDe(nome), isSubagente }].slice(-20),
       ultimaAtividade: rotulo,
+      // Um subagente em segundo plano mostra, na lista, o que está fazendo agora.
+      fundo: isSubagente ? fundoDe(s).map(x => (x.id === e.agentId ? { ...x, agora: rotulo } : x)) : s.fundo,
       ...(espera !== null && !isSubagente ? { fase: 'aguardando' as const, aguardandoMotivo: espera } : {}),
     }))
 
@@ -260,7 +405,9 @@ export const register: Register = on => {
 
     const agora = await $.clock.now()
     const isOk = !('deny' in ran && ran.deny !== undefined) && ran.isError !== true
-    await update($, ao, (s): Ao => {
+    const lancado = isOk ? lancadoPor(nome, args, ran.result, agora) : null
+    const parado = isOk && nome === 'TaskStop' ? String(args.task_id ?? args.shell_id ?? '') : ''
+    await mudar($, (s): Ao => {
       let etapas = s.etapas
       if (isOk && e.tool === 'TodoWrite') {
         etapas = e.todos.map((t, i) => ({ id: `t${i}`, titulo: encurtar(t.content, 80), status: deStatus(t.status) }))
@@ -282,6 +429,9 @@ export const register: Register = on => {
               )
       }
       const mudouPlano = etapas !== s.etapas
+      let fundo = fundoDe(s)
+      if (lancado !== null) fundo = [...fundo.filter(x => x.id !== lancado.id), lancado]
+      if (parado !== '') fundo = fundo.filter(x => x.id !== parado)
 
       return {
         ...s,
@@ -290,8 +440,10 @@ export const register: Register = on => {
         rodando: s.rodando.filter(x => x.id !== e.tool_use_id),
         etapas,
         etapasInicio: mudouPlano ? (s.etapasInicio ?? agora) : s.etapasInicio,
+        fundo,
       }
     })
+
 
     return ran
   }).catch(($, e, next) => next(e))
@@ -303,11 +455,56 @@ export const register: Register = on => {
     const giro = await read($, pulso)
     const agora = await $.clock.now()
     const { Box, Text } = $.ui.resolve(e)
+    const fundo = fundoDe(s)
 
     const total = s.etapas.length
     const feitas = s.etapas.filter(x => x.status === 'feita').length
     const atual = s.etapas.find(x => x.status === 'andamento')
 
+    // Estado 2: turno encerrado, mas há tarefas em segundo plano. Um turno aberto
+    // só para ler um aviso, enquanto não age, fica nesta mesma moldura.
+    const isLendoAviso = e.props.isWorking && s.turnoDeAviso === true && s.acoes === 0
+    if ((!e.props.isWorking && fundo.length > 0) || isLendoAviso) {
+      const n = fundo.length
+      const cor = 'suggestion'
+      const visiveis = fundo.slice(0, MAX_FUNDO)
+      const resto = n - visiveis.length
+      const contagem =
+        n === 0 ? 'nada mais rodando' : `${n} ${n === 1 ? 'tarefa ainda rodando' : 'tarefas ainda rodando'}`
+
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor={cor} paddingX={1}>
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text>
+              <Text color={cor}>{GIRO[giro % GIRO.length]} </Text>
+              <Text backgroundColor={cor} color="inverseText" weight="bold">
+                {isLendoAviso ? ' LENDO AVISO ' : ' EM SEGUNDO PLANO '}
+              </Text>
+            </Text>
+            <Text dimColor>{contagem}</Text>
+          </Box>
+          <Text dimColor wrap="truncate-end">
+            {isLendoAviso
+              ? 'Uma tarefa em segundo plano mandou notícia; Claude está lendo.'
+              : 'Turno encerrado: você já pode escrever, o resultado chega sozinho.'}
+          </Text>
+          {visiveis.map(x => (
+            <Box flexDirection="row" justifyContent="space-between">
+              <Text wrap="truncate-end">
+                <Text color={cor}>{ICONE_FUNDO[x.tipo]} </Text>
+                <Text dimColor>{NOME_FUNDO[x.tipo].padEnd(8)}</Text>
+                <Text>{x.rotulo}</Text>
+                {x.agora ? <Text dimColor>{` · ${x.agora}`}</Text> : null}
+              </Text>
+              <Text dimColor tabular>{` ${duracao(agora - x.desde)}`}</Text>
+            </Box>
+          ))}
+          {resto > 0 ? <Text dimColor>{`+${resto} ${resto === 1 ? 'outra' : 'outras'}`}</Text> : null}
+        </Box>
+      )
+    }
+
+    // Estado 3: pronto de verdade, nada rodando.
     if (!e.props.isWorking) {
       if (s.ultimoTurno === null) return next(e)
       const t = s.ultimoTurno
@@ -327,13 +524,14 @@ export const register: Register = on => {
             </Text>
             <Text dimColor>
               {'  '}último trabalho: {duracao(t.segundos * 1000)} · {t.acoes} {t.acoes === 1 ? 'ação' : 'ações'}
-              {plano}
+              {plano} · nada rodando
             </Text>
           </Text>
         </Box>
       )
     }
 
+    // Estado 1: trabalhando no turno.
     const isAguardando = s.fase === 'aguardando'
     const cor = isAguardando ? 'warning' : 'claude'
     const decorrido = s.inicio === null ? null : agora - s.inicio
@@ -409,6 +607,14 @@ export const register: Register = on => {
                 {x.status === 'feita' ? '●' : x.status === 'andamento' ? '◉' : '○'} {encurtar(x.titulo, corte)}
               </Text>
             ))}
+          </Text>
+        ) : null}
+        {fundo.length > 0 ? (
+          <Text wrap="truncate-end">
+            <Text color="suggestion">⇢ </Text>
+            <Text dimColor>
+              {fundo.length} em segundo plano: {fundo.map(x => x.rotulo).join(' · ')}
+            </Text>
           </Text>
         ) : null}
       </Box>

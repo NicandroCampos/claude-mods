@@ -2,7 +2,7 @@
 
 Mod para o Claude Code que mostra, acima do campo de mensagem, uma barra com o estado da sessão:
 
-- se o Claude está **trabalhando**, **aguardando você** (pergunta, aprovação de plano ou permissão) ou **parado**;
+- se o Claude está **trabalhando**, **aguardando você** (pergunta, aprovação de plano ou permissão), **parado com tarefas em segundo plano** ou **pronto de verdade**;
 - há quanto tempo está trabalhando e quantas ações já fez;
 - o que está fazendo agora ("Lendo arquivo.ts", "Rodando comando: …", "Pesquisando na web…");
 - o progresso do plano de etapas, com porcentagem, etapa atual, próxima etapa e tempo restante estimado.
@@ -16,7 +16,22 @@ Mod para o Claude Code que mostra, acima do campo de mensagem, uma barra com o e
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-A moldura muda de cor com a fase: laranja trabalhando, amarela aguardando você. Parado, a barra encolhe para uma linha: `✓ Pronto, sua vez  último trabalho: 3m 02s · 18 ações`.
+A moldura muda de cor com a fase: laranja trabalhando, amarela aguardando você.
+
+Quando o turno termina mas ainda há subagentes, comandos ou monitores rodando em segundo plano, a barra não diz "Pronto": mostra quantos são, o rótulo de cada um, há quanto tempo rodam e, nos subagentes, o que estão fazendo agora.
+
+```
+╭──────────────────────────────────────────────────────────────────╮
+│ ⠼  EM SEGUNDO PLANO                         2 tarefas ainda rodando │
+│ Turno encerrado: você já pode escrever, o resultado chega sozinho. │
+│ ⇢ agente  Revisar o código · Lendo register.tsx            3m 12s │
+│ ❯ comando Rodar os testes                                     45s │
+╰──────────────────────────────────────────────────────────────────╯
+```
+
+Cada aviso de tarefa concluída tira o item da lista. O turno curto que o Claude abre só para ler esse aviso fica na mesma moldura (`LENDO AVISO`), sem a barra pular para "trabalhando" e de volta a cada notificação; se o Claude passar a agir, aí sim vira `TRABALHANDO`. Ao fim de cada turno a lista é conferida com a do próprio Claude Code (o evento `Stop`), e um subagente só sai dela quando o motor o dá por encerrado, não quando apenas pausa à espera de trabalho próprio.
+
+Nada rodando, a barra encolhe para uma linha: `✓ Pronto, sua vez  último trabalho: 3m 02s · 18 ações · nada rodando`.
 
 O progresso vem de uma ferramenta que o mod registra (`progresso`): em pedidos de 3 ou mais etapas, o Claude declara o plano e atualiza a cada etapa. Também lê as listas de tarefas nativas (TodoWrite, TaskCreate/TaskUpdate). Sem plano, a barra diz que o progresso está indisponível em vez de inventar um número.
 
